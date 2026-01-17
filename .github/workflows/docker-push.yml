@@ -21,9 +21,11 @@ jobs:
             packages: write
 
         steps:
+            # 1️⃣ Checkout repository
             - name: Checkout repository
               uses: actions/checkout@v3
 
+            # 2️⃣ Log in to GHCR
             - name: Log in to GitHub Container Registry
               uses: docker/login-action@v2
               with:
@@ -31,65 +33,32 @@ jobs:
                   username: ${{ github.actor }}
                   password: ${{ secrets.GITHUB_TOKEN }}
 
-            - name: Build and push PR Docker image
+            # 3️⃣ Build and push Docker image
+            - name: Build and push Docker image
               uses: docker/build-push-action@v4
               with:
                   context: .
                   push: true
-                  tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
-                  #    tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:pr-${{ github.event.pull_request.number }}
+                  tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
 
-    # # ✅ Runs only after merge (push to deployment)
-    # build-and-deploy:
-    #     if: github.event_name == 'push' && github.ref == 'refs/heads/deployment'
-    #     runs-on: ubuntu-latest
-    #     permissions:
-    #         contents: write
-    #         packages: write
+            # 4️⃣ Update Kubernetes deployment in k8s repo
+            - name: Update deployment YAML in k8s repo
+              env:
+                  K8S_REPO: https://github.com/niridoy/k8s.git
+                  IMAGE_TAG: ${{ github.sha }}
+              run: |
+                  # Clone k8s repo
+                  git clone $K8S_REPO k8s-repo
+                  cd k8s-repo
 
-    #     steps:
-    #         - name: Checkout repository
-    #           uses: actions/checkout@v3
-    #           with:
-    #               fetch-depth: 0
+                  # Update deployment image
+                  sed -i "s|image: ghcr.io/.*/sample-php-app:.*|image: ghcr.io/${{ github.repository }}:${IMAGE_TAG}|" deployment.yml
 
-    #         - name: Log in to GitHub Container Registry
-    #           uses: docker/login-action@v2
-    #           with:
-    #               registry: ${{ env.REGISTRY }}
-    #               username: ${{ github.actor }}
-    #               password: ${{ secrets.GITHUB_TOKEN }}
+                  # Configure git
+                  git config user.name "github-actions"
+                  git config user.email "github-actions@github.com"
 
-    #         - name: Build and push production Docker image
-    #           id: docker_build
-    #           uses: docker/build-push-action@v4
-    #           with:
-    #               context: .
-    #               push: true
-    #               tags: |
-    #                   ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
-    #                   ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
-
-    #         - name: Update Kubernetes manifest with new image
-    #           run: |
-    #               sed -i "s|image: .*|image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}|" kubernetes/app/deployment.yaml
-
-    #         - name: Commit and push manifest update
-    #           run: |
-    #               git config --local user.email "github-actions[bot]@users.noreply.github.com"
-    #               git config --local user.name "github-actions[bot]"
-    #               git add kubernetes/app/deployment.yaml
-    #               git commit -m "chore: update image tag to ${{ github.sha }}" || echo "No changes to commit"
-    #               git pull --rebase origin deployment
-    #               git push origin deployment
-
-    # - name: Set up kubeconfig
-    #   run: |
-    #       mkdir -p $HOME/.kube
-    #       echo "${{ secrets.KUBECONFIG_DATA }}" > $HOME/.kube/config
-    #       chmod 600 $HOME/.kube/config
-
-    # - name: Deploy to Kubernetes
-    #   run: |
-    #       # Apply Kubernetes manifests
-    #       kubectl apply -f kubernetes/ --validate=false
+                  # Commit and push changes
+                  git add deployment.yml
+                  git commit -m "Update sample-php-app image to $IMAGE_TAG"
+                  git push https://github.com/${{ github.actor }}@github.com/niridoy/k8s.git main
