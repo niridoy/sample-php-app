@@ -46,9 +46,10 @@ jobs:
               env:
                   # K8S_REPO: https://github.com/niridoy/k8s.git
                   IMAGE_TAG: ${{ github.sha }}
+                  GH_PAT: ${{ secrets.PAT_TOKEN }}
               run: |
                   # Clone k8s repo
-                  git clone git clone https://<GH_PAT>@github.com/niridoy/k8s.git k8s-repo
+                  git clone https://$GH_PAT@github.com/niridoy/k8s.git k8s-repo
                   cd k8s-repo
 
                   # Update deployment image
@@ -61,4 +62,4 @@ jobs:
                   # Commit and push changes
                   git add deployment.yml
                   git commit -m "Update sample-php-app image to $IMAGE_TAG"
-                  git push https://github.com/${{ github.actor }}@github.com/niridoy/k8s.git main
+                  git push https://$GH_PAT@github.com/niridoy/k8s.git main
