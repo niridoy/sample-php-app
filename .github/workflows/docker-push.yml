@@ -44,11 +44,11 @@ jobs:
             # 4️⃣ Update Kubernetes deployment in k8s repo
             - name: Update deployment YAML in k8s repo
               env:
-                  K8S_REPO: https://github.com/niridoy/k8s.git
+                  # K8S_REPO: https://github.com/niridoy/k8s.git
                   IMAGE_TAG: ${{ github.sha }}
               run: |
                   # Clone k8s repo
-                  git clone $K8S_REPO k8s-repo
+                  git clone https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/niridoy/k8s.git k8s-repo
                   cd k8s-repo
 
                   # Update deployment image
