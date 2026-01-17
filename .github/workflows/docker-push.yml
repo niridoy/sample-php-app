@@ -48,7 +48,7 @@ jobs:
                   IMAGE_TAG: ${{ github.sha }}
               run: |
                   # Clone k8s repo
-                  git clone https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/niridoy/k8s.git k8s-repo
+                  git clone git clone https://<GH_PAT>@github.com/niridoy/k8s.git k8s-repo
                   cd k8s-repo
 
                   # Update deployment image
