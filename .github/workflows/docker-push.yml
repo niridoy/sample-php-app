@@ -12,14 +12,12 @@ env:
     IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-    # ✅ Runs only on PR (no deployment)
-    build-pr:
-        if: github.event_name == 'pull_request'
+    # 1️⃣ Build & Push Job - Builds Docker image and pushes to registry
+    build-and-push:
         runs-on: ubuntu-latest
         permissions:
             contents: read
             packages: write
-
         steps:
             - name: Checkout repository
               uses: actions/checkout@v3
@@ -31,64 +29,51 @@ jobs:
                   username: ${{ github.actor }}
                   password: ${{ secrets.GITHUB_TOKEN }}
 
-            - name: Build and push PR Docker image
+            - name: Build and push Docker image
               uses: docker/build-push-action@v4
               with:
                   context: .
                   push: true
-                  tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:pr-${{ github.event.pull_request.number }}
+                  tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
 
-    # # ✅ Runs only after merge (push to deployment)
-    # build-and-deploy:
-    #     if: github.event_name == 'push' && github.ref == 'refs/heads/deployment'
-    #     runs-on: ubuntu-latest
-    #     permissions:
-    #         contents: write
-    #         packages: write
+    # 2️⃣ Deploy Job - Updates K8s Repo via PR
+    deploy-k8s:
+        needs: build-and-push
+        # if: github.event_name == 'push'
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout k8s repository
+              uses: actions/checkout@v3
+              with:
+                  repository: niridoy/k8s
+                  token: ${{ secrets.PAT_TOKEN }}
+                  path: k8s-repo
 
-    #     steps:
-    #         - name: Checkout repository
-    #           uses: actions/checkout@v3
-    #           with:
-    #               fetch-depth: 0
+            - name: Create PR and Merge
+              env:
+                  GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+                  IMAGE_TAG: ${{ github.sha }}
+              run: |
+                  cd k8s-repo
+                  
+                  # Configure git
+                  git config user.name "github-actions"
+                  git config user.email "github-actions@github.com"
+                  
+                  # Create new branch
+                  BRANCH="deploy-${IMAGE_TAG:0:7}"
+                  git checkout -b $BRANCH
 
-    #         - name: Log in to GitHub Container Registry
-    #           uses: docker/login-action@v2
-    #           with:
-    #               registry: ${{ env.REGISTRY }}
-    #               username: ${{ github.actor }}
-    #               password: ${{ secrets.GITHUB_TOKEN }}
+                  # Update deployment image
+                  sed -i "s|image: ghcr.io/.*/sample-php-app:.*|image: ghcr.io/${{ github.repository }}:${IMAGE_TAG}|" sample-php/deployment.yml
 
-    #         - name: Build and push production Docker image
-    #           id: docker_build
-    #           uses: docker/build-push-action@v4
-    #           with:
-    #               context: .
-    #               push: true
-    #               tags: |
-    #                   ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
-    #                   ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+                  # Commit and Push
+                  git add sample-php/deployment.yml
+                  git commit -m "Update image to $IMAGE_TAG"
+                  git push origin $BRANCH
 
-    #         - name: Update Kubernetes manifest with new image
-    #           run: |
-    #               sed -i "s|image: .*|image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}|" kubernetes/app/deployment.yaml
-
-    #         - name: Commit and push manifest update
-    #           run: |
-    #               git config --local user.email "github-actions[bot]@users.noreply.github.com"
-    #               git config --local user.name "github-actions[bot]"
-    #               git add kubernetes/app/deployment.yaml
-    #               git commit -m "chore: update image tag to ${{ github.sha }}" || echo "No changes to commit"
-    #               git pull --rebase origin deployment
-    #               git push origin deployment
-
-    # - name: Set up kubeconfig
-    #   run: |
-    #       mkdir -p $HOME/.kube
-    #       echo "${{ secrets.KUBECONFIG_DATA }}" > $HOME/.kube/config
-    #       chmod 600 $HOME/.kube/config
-
-    # - name: Deploy to Kubernetes
-    #   run: |
-    #       # Apply Kubernetes manifests
-    #       kubectl apply -f kubernetes/ --validate=false
+                  # Create PR and Merge
+                  gh pr create --title "Deploy $IMAGE_TAG" --body "Updates image tag to $IMAGE_TAG" --base main --head $BRANCH
+                  
+                  # Attempt to merge (enable auto-merge if repo settings allow, or merge immediately)
+                  gh pr merge $BRANCH --merge --auto || gh pr merge $BRANCH --merge
