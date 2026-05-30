@@ -4,15 +4,31 @@ on:
     pull_request:
         branches: [main]
         types: [opened, synchronize, reopened]
-    push:
-        branches: [main]
+    workflow_dispatch:
+        inputs:
+            environment:
+                description: "Target GitOps environment"
+                required: true
+                default: "prd"
+                type: choice
+                options:
+                    - dev
+                    - stg
+                    - prd
+            deploy_ref:
+                description: "Branch or tag to deploy"
+                required: false
+                default: "main"
+                type: string
 
 env:
     REGISTRY: ghcr.io
     IMAGE_NAME: ${{ github.repository }}
+    GITOPS_REPO: your-org/k8s-gitops
+    GITOPS_OVERLAY_PATH: sample-php/overlays
+    GITOPS_BRANCH_PREFIX: update-sample-php-image
 
 jobs:
-    # ✅ Runs only on PR (no deployment)
     build-pr:
         if: github.event_name == 'pull_request'
         runs-on: ubuntu-latest
@@ -38,57 +54,68 @@ jobs:
                   push: true
                   tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:pr-${{ github.event.pull_request.number }}
 
-    # # ✅ Runs only after merge (push to deployment)
-    # build-and-deploy:
-    #     if: github.event_name == 'push' && github.ref == 'refs/heads/deployment'
-    #     runs-on: ubuntu-latest
-    #     permissions:
-    #         contents: write
-    #         packages: write
+    deploy-gitops-pr:
+        if: github.event_name == 'workflow_dispatch'
+        runs-on: ubuntu-latest
+        permissions:
+            contents: write
+            packages: write
 
-    #     steps:
-    #         - name: Checkout repository
-    #           uses: actions/checkout@v3
-    #           with:
-    #               fetch-depth: 0
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v3
+              with:
+                  fetch-depth: 0
+                  ref: ${{ github.event.inputs.deploy_ref }}
 
-    #         - name: Log in to GitHub Container Registry
-    #           uses: docker/login-action@v2
-    #           with:
-    #               registry: ${{ env.REGISTRY }}
-    #               username: ${{ github.actor }}
-    #               password: ${{ secrets.GITHUB_TOKEN }}
+            - name: Log in to GitHub Container Registry
+              uses: docker/login-action@v2
+              with:
+                  registry: ${{ env.REGISTRY }}
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GITHUB_TOKEN }}
 
-    #         - name: Build and push production Docker image
-    #           id: docker_build
-    #           uses: docker/build-push-action@v4
-    #           with:
-    #               context: .
-    #               push: true
-    #               tags: |
-    #                   ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
-    #                   ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            - name: Build and push deployment Docker image
+              uses: docker/build-push-action@v4
+              with:
+                  context: .
+                  push: true
+                  tags: |
+                      ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+                      ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
 
-    #         - name: Update Kubernetes manifest with new image
-    #           run: |
-    #               sed -i "s|image: .*|image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}|" kubernetes/app/deployment.yaml
+            - name: Clone GitOps repository
+              uses: actions/checkout@v3
+              with:
+                  repository: ${{ env.GITOPS_REPO }}
+                  token: ${{ secrets.GITOPS_TOKEN }}
+                  path: gitops
+                  fetch-depth: 0
 
-    #         - name: Commit and push manifest update
-    #           run: |
-    #               git config --local user.email "github-actions[bot]@users.noreply.github.com"
-    #               git config --local user.name "github-actions[bot]"
-    #               git add kubernetes/app/deployment.yaml
-    #               git commit -m "chore: update image tag to ${{ github.sha }}" || echo "No changes to commit"
-    #               git pull --rebase origin deployment
-    #               git push origin deployment
+            - name: Update GitOps deployment manifest
+              run: |
+                  cd gitops
+                  git config user.email "github-actions[bot]@users.noreply.github.com"
+                  git config user.name "github-actions[bot]"
+                  env_name="${{ github.event.inputs.environment }}"
+                  deploy_ref="${{ github.event.inputs.deploy_ref }}"
+                  gitops_path="${{ env.GITOPS_OVERLAY_PATH }}/${{ github.event.inputs.environment }}/patch.yaml"
+                  branch="${{ env.GITOPS_BRANCH_PREFIX }}-${{ github.sha }}-${{ github.event.inputs.environment }}"
+                  git checkout -b "$branch"
+                  sed -i "s|image: .*|image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}|" "$gitops_path"
+                  git add "$gitops_path"
+                  git diff --cached --quiet || git commit -m "chore: update sample-php image for $env_name from $deploy_ref to ${{ github.sha }}"
+                  git push origin "$branch"
 
-    # - name: Set up kubeconfig
-    #   run: |
-    #       mkdir -p $HOME/.kube
-    #       echo "${{ secrets.KUBECONFIG_DATA }}" > $HOME/.kube/config
-    #       chmod 600 $HOME/.kube/config
-
-    # - name: Deploy to Kubernetes
-    #   run: |
-    #       # Apply Kubernetes manifests
-    #       kubectl apply -f kubernetes/ --validate=false
+            - name: Create GitOps PR
+              uses: peter-evans/create-pull-request@v5
+              working-directory: gitops
+              with:
+                  token: ${{ secrets.GITOPS_TOKEN }}
+                  repository: ${{ env.GITOPS_REPO }}
+                  base: main
+                  head: ${{ env.GITOPS_BRANCH_PREFIX }}-${{ github.sha }}-${{ github.event.inputs.environment }}
+                  title: "chore: update sample-php deployment for ${{ github.event.inputs.environment }} from ${{ github.event.inputs.deploy_ref }} to ${{ github.sha }}"
+                  body: |
+                      This PR updates the k8s-gitops manifest for the `${{ github.event.inputs.environment }}` environment to deploy the new sample-php image built from `${{ github.event.inputs.deploy_ref }}` at commit `${{ github.sha }}`.
+                  draft: false
