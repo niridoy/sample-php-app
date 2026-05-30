@@ -18,7 +18,7 @@ on:
                     - prd
 
             deploy_ref:
-                description: "Branch or Tag (PRD = v*)"
+                description: "Branch or Tag (PRD must be v*)"
                 required: true
                 default: main
 
@@ -29,9 +29,9 @@ env:
     GITOPS_FOLDER: sample-php
 
 jobs:
-    # ------------------------------------------------------------
-    # PR BUILD
-    # ------------------------------------------------------------
+    # ============================================================
+    # PR BUILD (CI ONLY)
+    # ============================================================
     pr-build:
         if: github.event_name == 'pull_request'
         runs-on: ubuntu-latest
@@ -41,14 +41,15 @@ jobs:
             packages: write
 
         steps:
-            - uses: actions/checkout@v4
+            - name: Checkout Source
+              uses: actions/checkout@v4
 
-            - name: Login GHCR
+            - name: Login to GHCR
               uses: docker/login-action@v3
               with:
                   registry: ghcr.io
-                  username: ${{ github.actor }}
-                  password: ${{ secrets.GITHUB_TOKEN }}
+                  username: ${{ secrets.GHCR_USERNAME }}
+                  password: ${{ secrets.GHCR_TOKEN }}
 
             - name: Build & Push PR Image
               uses: docker/build-push-action@v6
@@ -57,9 +58,9 @@ jobs:
                   push: true
                   tags: ghcr.io/niridoy/sample-php-app:pr-${{ github.event.pull_request.number }}
 
-    # ------------------------------------------------------------
-    # DEPLOY JOB
-    # ------------------------------------------------------------
+    # ============================================================
+    # DEPLOY PIPELINE (CD)
+    # ============================================================
     deploy:
         if: github.event_name == 'workflow_dispatch'
         runs-on: ubuntu-latest
@@ -70,19 +71,22 @@ jobs:
 
         steps:
             # ---------------- VALIDATION ----------------
-            - name: Validate Input Rules
+            - name: Validate Environment Rules
               run: |
                   ENV="${{ github.event.inputs.environment }}"
                   REF="${{ github.event.inputs.deploy_ref }}"
 
+                  echo "ENV=$ENV"
+                  echo "REF=$REF"
+
                   if [ "$ENV" = "prd" ]; then
                     if [[ ! "$REF" =~ ^v ]]; then
-                      echo "❌ PROD only allows tags starting with v"
+                      echo "❌ PROD ONLY allows tags starting with v"
                       exit 1
                     fi
                   fi
 
-                  echo "✅ Validation OK"
+                  echo "✅ Validation Passed"
 
             # ---------------- IMAGE TAG LOGIC ----------------
             - name: Generate Image Tag
@@ -103,12 +107,21 @@ jobs:
                   echo "SOURCE_TYPE=$SOURCE_TYPE" >> $GITHUB_ENV
 
             # ---------------- CHECKOUT APP ----------------
-            - uses: actions/checkout@v4
+            - name: Checkout Application Code
+              uses: actions/checkout@v4
               with:
                   fetch-depth: 0
                   ref: ${{ github.event.inputs.deploy_ref }}
 
-            # ---------------- BUILD IMAGE ----------------
+            # ---------------- GHCR LOGIN ----------------
+            - name: Login to GHCR
+              uses: docker/login-action@v3
+              with:
+                  registry: ghcr.io
+                  username: ${{ secrets.GHCR_USERNAME }}
+                  password: ${{ secrets.GHCR_TOKEN }}
+
+            # ---------------- BUILD & PUSH IMAGE ----------------
             - name: Build & Push Image
               uses: docker/build-push-action@v6
               with:
@@ -116,8 +129,10 @@ jobs:
                   push: true
                   tags: ghcr.io/niridoy/sample-php-app:${{ env.IMAGE_TAG }}
 
-            # ---------------- CLONE GITOPS ----------------
-            - name: Checkout GitOps Repo
+            # ============================================================
+            # GITOPS UPDATE + PR
+            # ============================================================
+            - name: Checkout GitOps Repository
               uses: actions/checkout@v4
               with:
                   repository: niridoy/k8s-gitops
@@ -125,7 +140,6 @@ jobs:
                   path: gitops
                   fetch-depth: 0
 
-            # ---------------- UPDATE MANIFEST (FIXED LOGIC) ----------------
             - name: Update GitOps Manifest
               id: gitops
               run: |
@@ -135,38 +149,33 @@ jobs:
                   git config user.email "github-actions[bot]@users.noreply.github.com"
 
                   ENV="${{ github.event.inputs.environment }}"
+                  REF="${{ github.event.inputs.deploy_ref }}"
 
                   BRANCH="${ENV}/sample-php-${IMAGE_TAG}"
                   FILE="sample-php/overlays/${ENV}/patch.yaml"
 
                   git checkout -b "$BRANCH"
 
-                  echo "🔧 Updating image in $FILE"
+                  echo "Updating image in $FILE"
 
-                  OLD=$(grep "image:" "$FILE" || true)
-
+                  # SAFE replace
                   sed -i "s|ghcr.io/niridoy/sample-php-app:.*|ghcr.io/niridoy/sample-php-app:${IMAGE_TAG}|g" "$FILE"
-
-                  NEW=$(grep "image:" "$FILE" || true)
-
-                  echo "OLD: $OLD"
-                  echo "NEW: $NEW"
 
                   git add "$FILE"
 
-                  # ✅ FIX: real diff check
+                  # IMPORTANT FIX: real diff check
                   if git diff --cached --quiet; then
                     echo "NO_CHANGE=true" >> $GITHUB_ENV
-                    echo "❌ No real change detected → skipping PR"
+                    echo "❌ No change detected → skipping PR"
                     exit 0
                   fi
 
-                  git commit -m "[${ENV}][Sample-PHP][${SOURCE_TYPE}] Image ${IMAGE_TAG}"
+                  git commit -m "[${ENV}][Sample-PHP][${SOURCE_TYPE}] Deploy ${IMAGE_TAG}"
                   git push origin "$BRANCH"
 
                   echo "PR_BRANCH=$BRANCH" >> $GITHUB_ENV
 
-            # ---------------- CREATE PR (FIXED) ----------------
+            # ---------------- CREATE PR ----------------
             - name: Create Pull Request
               if: env.NO_CHANGE != 'true'
               uses: peter-evans/create-pull-request@v7
@@ -180,22 +189,24 @@ jobs:
                       ## 🚀 Deployment Summary
 
                       **Environment:** ${{ github.event.inputs.environment }}  
-                      **Source:** ${{ github.event.inputs.deploy_ref }}  
-                      **Type:** ${{ env.SOURCE_TYPE }}  
+                      **Source Ref:** ${{ github.event.inputs.deploy_ref }}  
+                      **Source Type:** ${{ env.SOURCE_TYPE }}  
                       **Image:** ghcr.io/niridoy/sample-php-app:${{ env.IMAGE_TAG }}
 
                       ### Rules
-                      - DEV/STG → branch or tag allowed
-                      - PRD → tag only (v*)
+                      - DEV → branch or tag allowed  
+                      - STG → branch or tag allowed  
+                      - PRD → tag only (`v*`)  
 
                       ---
-                      Auto-generated CI/CD pipeline
+                      Auto-generated by GitHub Actions CI/CD
 
             # ---------------- SUMMARY ----------------
-            - name: Summary
+            - name: Deployment Summary
               run: |
-                  echo "=================================="
-                  echo "ENV: ${{ github.event.inputs.environment }}"
-                  echo "REF: ${{ github.event.inputs.deploy_ref }}"
-                  echo "IMAGE: ghcr.io/niridoy/sample-php-app:${IMAGE_TAG}"
-                  echo "=================================="
+                  echo "===================================="
+                  echo "ENV   : ${{ github.event.inputs.environment }}"
+                  echo "REF   : ${{ github.event.inputs.deploy_ref }}"
+                  echo "TAG   : $IMAGE_TAG"
+                  echo "IMAGE : ghcr.io/niridoy/sample-php-app:${IMAGE_TAG}"
+                  echo "===================================="
