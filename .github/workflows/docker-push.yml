@@ -128,7 +128,7 @@ jobs:
                   git checkout -b "$BRANCH"
 
                   # SAFE REPLACEMENT (IMPORTANT FIX)
-                  sed -i "s|image:.*|image: ghcr.io/${{ env.IMAGE_NAME }}:${IMAGE_TAG}|g" "$FILE"
+                  sed -i -E "/name: sample-php/{n;s|(image:\s*).*|\1ghcr.io/niridoy/sample-php:${IMAGE_TAG}|}"
 
                   git add "$FILE"
 
