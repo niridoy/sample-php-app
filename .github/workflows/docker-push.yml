@@ -19,7 +19,7 @@ on:
 
 env:
     REGISTRY: ghcr.io
-    IMAGE_NAME: niridoy/sample-php-app
+    IMAGE_NAME: niridoy/sample-php
     GITOPS_REPO: niridoy/k8s-gitops
 
 # ------------------------------------------------------------
